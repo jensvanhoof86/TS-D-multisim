@@ -1,5 +1,4 @@
-py multisim.py sim.txt  --enable-server  --port COM21 --protocol LIVETOOLS4800 --loop --enable-datastream --enable-livetools-server
-
+py multisim.py sim.txt  --enable-server  --port COM21 --protocol LIVETOOLS4800 --loop --enable-datastream --enable-livetools-server  
 
 REM ------------------------------------------------------------
 REM multisim.py arguments overview

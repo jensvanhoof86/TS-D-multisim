@@ -4,14 +4,122 @@ import math
 import argparse
 import serial
 import serial.tools.list_ports
-
 import threading
 import json
+import socket
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 
+
+# =========================================================
+# TCP broadcast server (for 10012 datastream)
+# =========================================================
+
+class TcpBroadcastServer:
+    def __init__(self, port: int, name: str):
+        self.port = port
+        self.name = name
+        self.clients = []
+        self.lock = threading.Lock()
+        self.running = True
+
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        print(f"[{self.name}] Listening on 0.0.0.0:{self.port} (TCP)")
+
+    def _run(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", self.port))
+        srv.listen(5)
+        srv.settimeout(1.0)
+
+        while self.running:
+            try:
+                conn, addr = srv.accept()
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                print(f"[{self.name}] Client connected: {addr}")
+                with self.lock:
+                    self.clients.append(conn)
+            except socket.timeout:
+                continue
+            except Exception:
+                continue
+
+        try:
+            srv.close()
+        except Exception:
+            pass
+
+    def send(self, data: bytes):
+        if not data:
+            return
+        with self.lock:
+            dead = []
+            for c in self.clients:
+                try:
+                    c.sendall(data)
+                except Exception:
+                    dead.append(c)
+
+            for d in dead:
+                try:
+                    d.close()
+                except Exception:
+                    pass
+                try:
+                    self.clients.remove(d)
+                except ValueError:
+                    pass
+
+    def shutdown(self):
+        self.running = False
+        with self.lock:
+            for c in self.clients:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            self.clients.clear()
+
+
+# =========================================================
+# UDP sender (for 10013 LiveTools / FusionRX compatible)
+# =========================================================
+
+class UdpSender:
+    def __init__(self, host: str, port: int, name: str):
+        self.host = host
+        self.port = port
+        self.name = name
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # Enable broadcast if using 255.255.255.255 or *.255, etc.
+        if host == "255.255.255.255" or host.endswith(".255"):
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+        print(f"[{self.name}] Sending to {self.host}:{self.port} (UDP)")
+
+    def send(self, data: bytes):
+        if not data:
+            return
+        try:
+            self.sock.sendto(data, (self.host, self.port))
+        except Exception:
+            pass
+
+    def shutdown(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+
+
+# =========================================================
+# HTTP GPS API server (TS-D Live)
+# =========================================================
 
 class GpsApiHandler(BaseHTTPRequestHandler):
 
@@ -72,17 +180,30 @@ class GpsApiHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
-
-
-
-
 gps_state = {}
 gps_lock = threading.Lock()
 
 
-# -------------------------------------------------
-# Helpers
-# -------------------------------------------------
+def start_server(port):
+    server = ThreadingHTTPServer(("localhost", port), GpsApiHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"[HTTP] GPS API server running on http://localhost:{port}")
+    return server
+
+
+def update_source(id, lat, lng, heading, speed, altitude):
+    with gps_lock:
+        gps_state[id] = {
+            "id": id,
+            "lat": lat,
+            "lng": lng,
+            "heading": heading,
+            "speed": speed,
+            "altitude": altitude,
+            # MATCH C# JavaScriptSerializer format
+            "lastUpdateUtc": f"/Date({int(time.time() * 1000)})/"
+        }
 
 
 # -------------------------------------------------
@@ -123,153 +244,16 @@ def build_pklds_sentence(vehicle_id, lat, lon):
     )
 
     cs = pkl_checksum(body)
-
     sentence = f"${body}*{cs}\r\n"
 
-    # Add legacy prefix: 92 03 02 $
+    # Add legacy prefix: 39 32 03 02  (ASCII "92" + control bytes)
     prefix = bytes([0x39, 0x32, 0x03, 0x02])
 
     return prefix + sentence.encode()
 
-def build_gsv():
-    s1 = (
-        "GPGSV,2,1,08,"
-        "01,25,140,39,"
-        "03,50,081,44,"
-        "04,75,140,46,"
-        "11,11,310,45"
-    )
-    s2 = (
-        "GPGSV,2,2,08,"
-        "17,28,226,45,"
-        "19,37,255,46,"
-        "28,10,029,35,"
-        "31,24,053,37"
-    )
-
-    return [
-        f"${s1}*{nmea_checksum(s1)}\r\n",
-        f"${s2}*{nmea_checksum(s2)}\r\n",
-    ]
-
-def build_gsa():
-    body = (
-        "GPGSA,A,3,"
-        "01,03,04,17,19,11,31,28,"
-        ",,,,,"
-        "1.5,0.8,1.3"
-    )
-    return f"${body}*{nmea_checksum(body)}\r\n"
-
-def start_server(port):
-    server = ThreadingHTTPServer(("localhost", port), GpsApiHandler)
-    thread = threading.Thread(
-        target=server.serve_forever,
-        daemon=True
-    )
-    thread.start()
-    print(f"[HTTP] GPS API server running on http://localhost:{port}")
-    return server
-
-
-def update_source(id, lat, lng, heading, speed, altitude):
-    with gps_lock:
-        gps_state[id] = {
-            "id": id,
-            "lat": lat,
-            "lng": lng,
-            "heading": heading,
-            "speed": speed,
-            "altitude": altitude,
-            # MATCH C# JavaScriptSerializer format
-            "lastUpdateUtc": f"/Date({int(time.time() * 1000)})/"
-        }
-
-
-
-def map_amp_id(dsm_id, enable_remap):
-    """
-    Remap DSM ID for AMP / Kenwood binary protocols.
-    If enabled: DSM00 -> 0x64
-    Else: original DSM hex ID
-    """
-    if enable_remap and dsm_id == "00":
-        return 0x64
-    return int(dsm_id, 16)
-
-def is_valid_hex_byte(s):
-    return len(s) == 2 and all(c in "0123456789ABCDEF" for c in s)
-
-
-def list_ports():
-    ports = serial.tools.list_ports.comports()
-    print("Available serial ports:")
-    for p in ports:
-        print(f"  {p.device}  - {p.description}")
-    return ports
-
-def progress_tag(dsm_id, hhmmss):
-    """
-    Returns colored suffix like: -DSM0A(10:56:28)
-    """
-    t = f"{hhmmss[0:2]}:{hhmmss[2:4]}:{hhmmss[4:6]}"
-    tag = f"-DSM{dsm_id}({t})"
-    return f"\033[36m{tag}\033[0m"  # cyan
-
-
-def parse_dsm_line(line):
-    """
-    Returns:
-    (timestamp_ms, dsm_id, hhmmss, lat, lon, alt, speed, course, status)
-    Raises ValueError if unparsable
-    """
-    ts_part, payload = line.strip().split("]", 1)
-    timestamp_ms = int(ts_part[1:])
-
-    payload = payload.strip()
-    parts = payload.split(",")
-
-    dsm_id = parts[0][4:]  # DSMxx
-    hhmmss = parts[1]
-    lat = float(parts[2])
-    lon = float(parts[3])
-    alt = float(parts[4])
-    speed = float(parts[5])
-    course = float(parts[6])
-    status = parts[7]
-
-    return timestamp_ms, dsm_id, hhmmss, lat, lon, alt, speed, course, status
-
-
-def hex_dump(data):
-    return " ".join(f"0x{b:02X}" for b in data)
-
 
 # -------------------------------------------------
-# AMP / Kenwood binary encoding
-# -------------------------------------------------
-
-def encode_amp(dsm_id, lat_deg, lon_deg, alt_m, enable_remap=False):
-
-    lat_rad = math.radians(lat_deg)
-    lon_rad = math.radians(lon_deg)
-
-    lat_i = int(lat_rad * 100_000_000)
-    lon_i = int(lon_rad * 100_000_000)
-    alt_i = int(alt_m)
-
-    frame = bytearray()
-    frame.append(map_amp_id(dsm_id, enable_remap))
-
-    frame += lat_i.to_bytes(4, "big", signed=True)
-    frame += lon_i.to_bytes(4, "big", signed=True)
-    frame += alt_i.to_bytes(2, "big", signed=True)
-
-    return bytes(frame)
-
-
-# -------------------------------------------------
-# NMEA helpers (GPGGA)
+# NMEA helpers (GPGGA / LIVETOOLS)
 # -------------------------------------------------
 
 def nmea_checksum(s):
@@ -305,16 +289,13 @@ def build_gga(hhmmss, lat, lon, alt):
         f"{lon_s},{lon_h},"
         f"1,08,1.0,{alt:.1f},M,0.0,M,,"
     )
-
     return f"${body}*{nmea_checksum(body)}\r\n"
-
 
 
 def build_rmc(hhmmss, lat, lon, speed_knots=0.0, course=0.0):
     lat_s, lat_h = deg_to_nmea_lat(lat)
     lon_s, lon_h = deg_to_nmea_lon(lon)
 
-    # Use today's UTC date
     ddmmyy = datetime.utcnow().strftime("%d%m%y")
 
     body = (
@@ -325,66 +306,142 @@ def build_rmc(hhmmss, lat, lon, speed_knots=0.0, course=0.0):
         f"{course:.1f},"
         f"{ddmmyy},,,A"
     )
-
     return f"${body}*{nmea_checksum(body)}\r\n"
 
+
+def build_gsa():
+    body = (
+        "GPGSA,A,3,"
+        "01,03,04,17,19,11,31,28,"
+        ",,,,,"
+        "1.5,0.8,1.3"
+    )
+    return f"${body}*{nmea_checksum(body)}\r\n"
+
+
+def build_gsv():
+    s1 = (
+        "GPGSV,2,1,08,"
+        "01,25,140,39,"
+        "03,50,081,44,"
+        "04,75,140,46,"
+        "11,11,310,45"
+    )
+    s2 = (
+        "GPGSV,2,2,08,"
+        "17,28,226,45,"
+        "19,37,255,46,"
+        "28,10,029,35,"
+        "31,24,053,37"
+    )
+
+    return [
+        f"${s1}*{nmea_checksum(s1)}\r\n",
+        f"${s2}*{nmea_checksum(s2)}\r\n",
+    ]
+
+
 # -------------------------------------------------
+# DSM helpers
+# -------------------------------------------------
+
+def map_amp_id(dsm_id, enable_remap):
+    if enable_remap and dsm_id == "00":
+        return 0x64
+    return int(dsm_id, 16)
+
+
+def is_valid_hex_byte(s):
+    return len(s) == 2 and all(c in "0123456789ABCDEF" for c in s)
+
+
+def list_ports():
+    ports = serial.tools.list_ports.comports()
+    print("Available serial ports:")
+    for p in ports:
+        print(f"  {p.device}  - {p.description}")
+    return ports
+
+
+def progress_tag(dsm_id, hhmmss):
+    t = f"{hhmmss[0:2]}:{hhmmss[2:4]}:{hhmmss[4:6]}"
+    tag = f"-DSM{dsm_id}({t})"
+    return f"\033[36m{tag}\033[0m"  # cyan
+
+
+def parse_dsm_line(line):
+    ts_part, payload = line.strip().split("]", 1)
+    timestamp_ms = int(ts_part[1:])
+
+    payload = payload.strip()
+    parts = payload.split(",")
+
+    dsm_id = parts[0][4:]  # DSMxx (also works for $DSMxx -> yields xx)
+    hhmmss = parts[1]
+    lat = float(parts[2])
+    lon = float(parts[3])
+    alt = float(parts[4])
+    speed = float(parts[5])
+    course = float(parts[6])
+    status = parts[7]
+
+    return timestamp_ms, dsm_id, hhmmss, lat, lon, alt, speed, course, status
+
+
+def hex_dump(data):
+    return " ".join(f"0x{b:02X}" for b in data)
+
+
+# -------------------------------------------------
+# AMP / Kenwood binary encoding
+# -------------------------------------------------
+
+def encode_amp(dsm_id, lat_deg, lon_deg, alt_m, enable_remap=False):
+    lat_rad = math.radians(lat_deg)
+    lon_rad = math.radians(lon_deg)
+
+    lat_i = int(lat_rad * 100_000_000)
+    lon_i = int(lon_rad * 100_000_000)
+    alt_i = int(alt_m)
+
+    frame = bytearray()
+    frame.append(map_amp_id(dsm_id, enable_remap))
+    frame += lat_i.to_bytes(4, "big", signed=True)
+    frame += lon_i.to_bytes(4, "big", signed=True)
+    frame += alt_i.to_bytes(2, "big", signed=True)
+    return bytes(frame)
+
+
+# =========================================================
 # Main
-# -------------------------------------------------
+# =========================================================
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", help="Serial port (e.g. COM4 or /dev/ttyUSB0)")
-parser.add_argument(
-    "--protocol",
-    help="Protocol: AMP19200, KENWOOD4800, DSM115200, GPGGA4800"
-)
-parser.add_argument(
-    "--loop",
-    action="store_true",
-    help="Loop the input file continuously"
-)
+parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600")
+parser.add_argument("--loop", action="store_true", help="Loop the input file continuously")
 
-parser.add_argument(
-    "--enable-server",
-    action="store_true",
-    help="Enable HTTP GPS API server"
-)
+parser.add_argument("--enable-server", action="store_true", help="Enable HTTP GPS API server")
+parser.add_argument("--server-port", type=int, default=5005, help="HTTP server port (default: 5005)")
 
-parser.add_argument(
-    "--server-port",
-    type=int,
-    default=5005,
-    help="HTTP server port (default: 5005)"
-)
+parser.add_argument("--enable-remapDSM00", action="store_true", help="Remap DSM00 to ID 0x64 for AMP/KENWOOD protocols")
 
+# UPDATED: LiveTools is UDP (FusionRX compatible)
+parser.add_argument("--enable-livetools-server", action="store_true", help="Send LiveTools NMEA on UDP 10013 (FusionRX compatible)")
+parser.add_argument("--livetools-ip", default="255.255.255.255", help="LiveTools UDP destination IP (default: 255.255.255.255 broadcast)")
+parser.add_argument("--livetools-port", type=int, default=10013, help="LiveTools UDP destination port (default: 10013)")
 
-parser.add_argument(
-    "--enable-remapDSM00",
-    action="store_true",
-    help="Remap DSM00 to ID 0x64 for AMP/KENWOOD protocols"
-)
+# datastream remains TCP
+parser.add_argument("--enable-datastream", action="store_true", help="Mirror main serial output bytes on TCP 10012")
 
 parser.add_argument("file", help="DSM input file")
-parser.add_argument(
-    "--nmea-out",
-    dest="nmea_out",
-    help="Optional serial port for NMEA4800 output (GPRMC + GPGGA)"
-)
-
-parser.add_argument(
-    "--starttime",
-    help="Start replay at or after this HHMMSS (e.g. 104750)"
-)
-
+parser.add_argument("--nmea-out", dest="nmea_out", help="Optional NMEA output at 4800 baud (DSM00 only): RMC then 200ms then GGA")
+parser.add_argument("--starttime", help="Start replay at or after this HHMMSS (e.g. 104750)")
 
 parser.add_argument("--require-0F", action="store_true")
 parser.add_argument("--ignore", action="append", default=[])
-parser.add_argument("--id", help="DSM ID to filter (for GPGGA mode)")
-parser.add_argument(
-    "--DSM-out",
-    dest="dsm_out",
-    help="Optional serial port for DSM115200 output (e.g. COM12)"
-)
+parser.add_argument("--id", help="DSM ID to filter (used with GPGGA/LIVETOOLS and livetools-server)")
+parser.add_argument("--DSM-out", dest="dsm_out", help="Optional mirror output of raw DSM at 115200 baud (e.g. COM12)")
 
 args = parser.parse_args()
 
@@ -396,9 +453,6 @@ if args.starttime:
         print("Invalid --starttime format, expected HHMMSS (e.g. 104750)")
         sys.exit(1)
     start_hhmmss = int(args.starttime)
-
-
-
 
 
 # -------------------------------------------------
@@ -425,14 +479,13 @@ if protocol is None:
     choice = input("Choice: ").strip()
 
     protocol_map = {
-    "1": "AMP19200",
-    "2": "DSM115200",
-    "3": "GPGGA4800",
-    "4": "KENWOOD4800",
-    "5": "LIVETOOLS4800",
-    "6": "PKLDS9600",
-}
-
+        "1": "AMP19200",
+        "2": "DSM115200",
+        "3": "GPGGA4800",
+        "4": "KENWOOD4800",
+        "5": "LIVETOOLS4800",
+        "6": "PKLDS9600",
+    }
 
     protocol = protocol_map.get(choice)
     if not protocol:
@@ -471,14 +524,24 @@ elif protocol == "PKLDS9600":
     mode_name = "PKLDS"
     baud = 9600
 
-
 else:
     print(f"Unknown protocol: {protocol}")
     sys.exit(1)
 
+# If livetools UDP is enabled but we are not in a mode that already prompts for --id,
+# prompt here so UDP 10013 knows which DSM ID to track.
+if args.enable_livetools_server and mode_name not in ("GPGGA", "LIVETOOLS"):
+    if not args.id:
+        args.id = input("Enter DSM ID to filter for LiveTools UDP (e.g. DSM00): ").strip()
+    args.id = args.id.replace("DSM", "").upper()
+
+# -------------------------------------------------
+# Open serial ports
+# -------------------------------------------------
 
 ser = serial.Serial(port, baud, timeout=1)
 print(f"\nOpened {port} @ {baud} baud ({mode_name})\n")
+
 dsm_ser = None
 if args.dsm_out:
     try:
@@ -497,14 +560,67 @@ if args.nmea_out:
         print(f"Failed to open NMEA-out port {args.nmea_out}: {e}")
         sys.exit(1)
 
-
 # -------------------------------------------------
-# Start HTTP server (optional)
+# Start servers
 # -------------------------------------------------
 
 http_server = None
 if args.enable_server:
     http_server = start_server(args.server_port)
+
+datastream_server = TcpBroadcastServer(10012, "DataStream") if args.enable_datastream else None
+livetools_udp = UdpSender(args.livetools_ip, args.livetools_port, "LiveTools") if args.enable_livetools_server else None
+
+
+# -------------------------------------------------
+# Serial write wrapper (mirrors to TCP 10012 if enabled)
+# -------------------------------------------------
+
+def send_main(data: bytes):
+    ser.write(data)
+    if datastream_server:
+        datastream_server.send(data)
+
+
+# -------------------------------------------------
+# LiveTools sender (reuses exact sentences as LIVETOOLS4800)
+# -------------------------------------------------
+
+def build_livetools_burst_bytes(hhmmss, lat, lon, alt, spd, crs) -> bytes:
+    # Identical content order as LIVETOOLS4800 mode.
+    gga = build_gga(hhmmss, lat, lon, alt).encode()
+    gsa = build_gsa().encode()
+    gsv_list = [g.encode() for g in build_gsv()]
+    rmc = build_rmc(hhmmss, lat, lon, spd, crs).encode()
+    return b"".join([gga, gsa] + gsv_list + [rmc])
+
+
+def send_livetools_udp(hhmmss, lat, lon, alt, spd, crs, respect_serial_delays: bool):
+    """
+    If respect_serial_delays=True (when main mode is LIVETOOLS),
+    we send chunks in the same cadence as serial mode (0.05s sleeps).
+    Otherwise we send the same bytes as one combined UDP datagram (no extra delay).
+    """
+    if not livetools_udp:
+        return
+
+    if not respect_serial_delays:
+        livetools_udp.send(build_livetools_burst_bytes(hhmmss, lat, lon, alt, spd, crs))
+        return
+
+    # cadence like serial LIVETOOLS4800
+    livetools_udp.send(build_gga(hhmmss, lat, lon, alt).encode())
+    time.sleep(0.05)
+
+    livetools_udp.send(build_gsa().encode())
+    time.sleep(0.05)
+
+    for g in build_gsv():
+        livetools_udp.send(g.encode())
+        time.sleep(0.05)
+
+    livetools_udp.send(build_rmc(hhmmss, lat, lon, spd, crs).encode())
+
 
 # -------------------------------------------------
 # Playback loop
@@ -521,9 +637,9 @@ while True:
 
             try:
                 ts, dsm_id, hhmmss, lat, lon, alt, spd, crs, status = parse_dsm_line(line)
+                tag = progress_tag(dsm_id, hhmmss)
+                hhmmss_i = int(hhmmss)
 
-                
-                
                 update_source(
                     id=int(dsm_id, 16),
                     lat=lat,
@@ -531,8 +647,7 @@ while True:
                     heading=crs,
                     speed=spd,
                     altitude=alt
-)
-
+                )
 
             except Exception:
                 print("SKIP (unparsable):", line.strip())
@@ -545,7 +660,6 @@ while True:
                 if hhmmss_i < start_hhmmss:
                     continue
 
-                # First line at or after start time
                 started = True
                 last_ts = None
                 print(f"\n--- Starting replay at {hhmmss} ---\n")
@@ -574,13 +688,13 @@ while True:
             if dsm_id in args.ignore:
                 continue
 
+            # Serial-mode filters
             if mode_name in ("GPGGA", "LIVETOOLS") and dsm_id != args.id:
                 continue
 
-
+            # Timing based on log timestamps
             if last_ts is not None:
                 time.sleep((ts - last_ts) / 1000.0)
-
             last_ts = ts
 
             # -------------------------------------------------
@@ -590,6 +704,17 @@ while True:
                 dsm_line = line.split("]", 1)[1].strip()
                 dsm_ser.write(dsm_line.encode() + b"\r\n")
 
+            # -------------------------------------------------
+            # Optional LiveTools UDP output (ID-filtered)
+            # -------------------------------------------------
+            if livetools_udp and args.id and dsm_id == args.id:
+                # If main mode is LIVETOOLS, we match serial cadence.
+                # Otherwise, don't add extra sleeps; send one combined datagram.
+                send_livetools_udp(hhmmss, lat, lon, alt, spd, crs, respect_serial_delays=(mode_name == "LIVETOOLS"))
+
+            # -------------------------------------------------
+            # Main serial output modes (mirrored to 10012 if enabled)
+            # -------------------------------------------------
             if mode_name in ("AMP", "Kenwood"):
                 data = encode_amp(
                     dsm_id,
@@ -598,17 +723,17 @@ while True:
                     alt,
                     enable_remap=args.enable_remapDSM00
                 )
-                ser.write(data)
+                send_main(data)
                 print("TX:", hex_dump(data), tag)
 
             elif mode_name == "DSM":
                 out = line.split("]", 1)[1].strip()
-                ser.write(out.encode() + b"\r\n")
+                send_main(out.encode() + b"\r\n")
                 print("TX:", out, tag)
 
             elif mode_name == "GPGGA":
                 gga = build_gga(hhmmss, lat, lon, alt)
-                ser.write(gga.encode())
+                send_main(gga.encode())
                 print("TX:", gga.strip(), tag)
 
             elif mode_name == "LIVETOOLS":
@@ -617,32 +742,24 @@ while True:
                 gsv_list = build_gsv()
                 rmc = build_rmc(hhmmss, lat, lon, spd, crs)
 
-                ser.write(gga.encode())
+                send_main(gga.encode())
                 time.sleep(0.05)
 
-                ser.write(gsa.encode())
+                send_main(gsa.encode())
                 time.sleep(0.05)
 
                 for gsv in gsv_list:
-                    ser.write(gsv.encode())
+                    send_main(gsv.encode())
                     time.sleep(0.05)
 
-                ser.write(rmc.encode())
+                send_main(rmc.encode())
 
                 print("TX: LIVETOOLS burst", tag)
 
             elif mode_name == "PKLDS":
-
                 vehicle_id = 1000 + int(dsm_id, 16)
-
-                pkt = build_pklds_sentence(
-                    vehicle_id,
-                    lat,
-                    lon
-                )
-
-                ser.write(pkt)
-
+                pkt = build_pklds_sentence(vehicle_id, lat, lon)
+                send_main(pkt)
                 print("TX: PKLDS", pkt, tag)
 
     if not args.loop:
@@ -651,15 +768,32 @@ while True:
     print("\n--- Looping simulation ---\n")
 
 
-
 print("Done.")
-ser.close()
+try:
+    ser.close()
+except Exception:
+    pass
+
 if dsm_ser:
-    dsm_ser.close()
+    try:
+        dsm_ser.close()
+    except Exception:
+        pass
 
 if nmea_ser:
-    nmea_ser.close()
+    try:
+        nmea_ser.close()
+    except Exception:
+        pass
 
 if http_server:
-    http_server.shutdown()
+    try:
+        http_server.shutdown()
+    except Exception:
+        pass
 
+if livetools_udp:
+    livetools_udp.shutdown()
+
+if datastream_server:
+    datastream_server.shutdown()
