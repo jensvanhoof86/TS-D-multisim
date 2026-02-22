@@ -1,4 +1,4 @@
-py multisim.py sim.txt  --enable-server  --port COM21 --protocol PKLDS9600 --loop
+py multisim.py sim.txt  --enable-server  --port COM21 --protocol PKLDS9600 --loop --enable-datastream --enable-livetools-server
 
 
 REM ------------------------------------------------------------
