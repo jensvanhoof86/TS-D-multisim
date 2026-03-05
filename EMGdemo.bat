@@ -1,10 +1,5 @@
-REM multisim.py sim.txt  --enable-server --starttime 152900 --port COM21 --protocol DSM115200  --nmea-out COM10 --enable-remapDSM00 --loop
-
-
-
-py multisim.py sssim.txt --port COM9 --protocol AMP19200  --DSM-out COM21 --nmea-out COM10  --loop --starttime 113000 --enable-datastream --enable-remapDSM00
+py multisim.py sim.txt --port COM21 --protocol PKLDS9600 --loop --starttime 113500
 pause
-
 REM ------------------------------------------------------------
 REM multisim.py arguments overview
 REM ------------------------------------------------------------

@@ -1,5 +1,4 @@
-py multisim.py sim.txt  --enable-server  --port COM21 --protocol LIVETOOLS4800 --loop --enable-datastream --enable-livetools-server  
-
+py multisim.py sssim.txt  --enable-server  --port COM9 --nmea-out COM10 --protocol DSM115200 --loop --enable-livetools-server --enable-remapDSM00
 REM ------------------------------------------------------------
 REM multisim.py arguments overview
 REM ------------------------------------------------------------

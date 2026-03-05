@@ -1,4 +1,4 @@
-py multisim.py sim.txt  --port COM21 --protocol DSM115200 --loop --starttime 104600  
+py multisim.py sim.txt  --enable-server --port COM9 --protocol DSM115200 --loop --starttime 113000 --nmea-out COM10 
 
 REM ------------------------------------------------------------
 REM multisim.py arguments overview
