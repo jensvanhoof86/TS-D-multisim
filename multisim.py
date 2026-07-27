@@ -387,6 +387,7 @@ def encode_amp(dsm_id, lat_deg, lon_deg, alt_m, enable_remap=False):
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", help="Serial port (e.g. COM4 or /dev/ttyUSB0)")
 parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600")
+parser.add_argument("--override-baudrate", dest="override_baudrate", type=int, help="Override the baud rate used to open --port, regardless of the protocol's default")
 parser.add_argument("--loop", action="store_true", help="Loop the input file continuously")
 
 parser.add_argument("--enable-server", action="store_true", help="Enable HTTP GPS API server")
@@ -490,6 +491,10 @@ elif protocol == "PKLDS9600":
 else:
     print(f"Unknown protocol: {protocol}")
     sys.exit(1)
+
+if args.override_baudrate:
+    print(f"Overriding baud rate: {baud} -> {args.override_baudrate}")
+    baud = args.override_baudrate
 
 # If livetools TCP is enabled but we are not in a mode that already prompts for --id,
 # prompt here so TCP 10013 knows which DSM ID to track.
