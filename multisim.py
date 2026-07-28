@@ -386,7 +386,7 @@ def encode_amp(dsm_id, lat_deg, lon_deg, alt_m, enable_remap=False):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", help="Serial port (e.g. COM4 or /dev/ttyUSB0)")
-parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600")
+parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600 | NMEA4800")
 parser.add_argument("--override-baudrate", dest="override_baudrate", type=int, help="Override the baud rate used to open --port, regardless of the protocol's default")
 parser.add_argument("--loop", action="store_true", help="Loop the input file continuously")
 
@@ -439,6 +439,7 @@ if protocol is None:
     print("4) Kenwood 4800")
     print("5) LiveTools 4800")
     print("6) Kenwood PKLDS 9600")
+    print("7) NMEA 4800 (GPRMC + 200ms + GPGGA)")
 
     choice = input("Choice: ").strip()
 
@@ -449,6 +450,7 @@ if protocol is None:
         "4": "KENWOOD4800",
         "5": "LIVETOOLS4800",
         "6": "PKLDS9600",
+        "7": "NMEA4800",
     }
 
     protocol = protocol_map.get(choice)
@@ -488,6 +490,13 @@ elif protocol == "PKLDS9600":
     mode_name = "PKLDS"
     baud = 9600
 
+elif protocol == "NMEA4800":
+    mode_name = "NMEA4800"
+    baud = 4800
+    if not args.id:
+        args.id = input("Enter DSM ID to filter (e.g. DSM00): ").strip()
+    args.id = args.id.replace("DSM", "").upper()
+
 else:
     print(f"Unknown protocol: {protocol}")
     sys.exit(1)
@@ -498,7 +507,7 @@ if args.override_baudrate:
 
 # If livetools TCP is enabled but we are not in a mode that already prompts for --id,
 # prompt here so TCP 10013 knows which DSM ID to track.
-if args.enable_livetools_server and mode_name not in ("GPGGA", "LIVETOOLS"):
+if args.enable_livetools_server and mode_name not in ("GPGGA", "LIVETOOLS", "NMEA4800"):
     if not args.id:
         args.id = input("Enter DSM ID to filter for LiveTools TCP (e.g. DSM00): ").strip()
     args.id = args.id.replace("DSM", "").upper()
@@ -658,7 +667,7 @@ while True:
                 continue
 
             # Serial-mode filters
-            if mode_name in ("GPGGA", "LIVETOOLS") and dsm_id != args.id:
+            if mode_name in ("GPGGA", "LIVETOOLS", "NMEA4800") and dsm_id != args.id:
                 continue
 
             # Timing based on log timestamps
@@ -724,6 +733,17 @@ while True:
                 send_main(rmc.encode())
 
                 print("TX: LIVETOOLS burst", tag)
+
+            elif mode_name == "NMEA4800":
+                rmc = build_rmc(hhmmss, lat, lon, spd, crs)
+                gga = build_gga(hhmmss, lat, lon, alt)
+
+                send_main(rmc.encode())
+                time.sleep(0.2)
+                send_main(gga.encode())
+
+                print("TX:", rmc.strip(), tag)
+                print("TX:", gga.strip(), tag)
 
             elif mode_name == "PKLDS":
                 vehicle_id = 1000 + int(dsm_id, 16)
