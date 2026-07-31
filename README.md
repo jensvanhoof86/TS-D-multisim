@@ -75,6 +75,7 @@ python multisim.py sim.txt --port COM9 --protocol AMP19200
 | GPGGA4800     | 4800   | NMEA GPGGA output                    |
 | LIVETOOLS4800 | 4800   | Full NMEA burst (GGA, GSA, GSV, RMC) |
 | PKLDS9600     | 9600   | Legacy PKLDS protocol                |
+| NMEA4800      | 4800   | GPRMC, wait 200ms, then GPGGA        |
 
 ---
 
@@ -137,12 +138,25 @@ DSM115200
 GPGGA4800
 LIVETOOLS4800
 PKLDS9600
+NMEA4800
 ```
 
 Example:
 
 ```bash
 --protocol AMP19200
+```
+
+---
+
+### `--override-baudrate <BAUD>`
+
+Override the baud rate used to open `--port`, regardless of the protocol's default.
+
+Example:
+
+```bash
+--protocol AMP19200 --override-baudrate 9600
 ```
 
 ---
@@ -279,6 +293,7 @@ DSM ID filter used with:
 
 * GPGGA4800
 * LIVETOOLS4800
+* NMEA4800
 * LiveTools TCP server
 
 Example:
