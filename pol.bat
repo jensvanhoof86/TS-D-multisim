@@ -2,7 +2,7 @@ REM multisim.py sim.txt  --enable-server --starttime 152900 --port COM21 --proto
 
 
 
-py multisim.py finland2026.txt --port COM11 --protocol DSM115200    --loop --starttime 060705 --enable-datastream --enable-remapDSM00
+py multisim.py dsm_20260725.txt --port COM1 --protocol DSM115200 --loop
 pause
 
 REM ------------------------------------------------------------
