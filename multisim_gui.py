@@ -37,6 +37,7 @@ PROTOCOL_INFO = {
     "LIVETOOLS4800": (4800,   "Full NMEA burst: GGA, GSA, GSV x2, RMC", True),
     "PKLDS9600":     (9600,   "Legacy Eurolinx PKLDS protocol", False),
     "NMEA4800":      (4800,   "GPRMC, wait 200ms, then GPGGA", True),
+    "PRAVE115200":   (115200, "Raveon $PRAVE sentence (AN177), one per vehicle", False),
 }
 
 PROTOCOLS = list(PROTOCOL_INFO.keys())
@@ -179,6 +180,19 @@ Override baud rate
 --enable-remapDSM00
     Remaps vehicle DSM00 to tracking ID 0x64 (100 decimal). Only
     affects the AMP19200 / KENWOOD4800 binary protocols.
+
+PRAVE ID map (json, optional)
+    Only used by PRAVE115200. Optional JSON file mapping DSM hex
+    IDs to the numeric "From ID" sent in the $PRAVE sentence, e.g.
+    {"00": 1000, "0B": 1001}. If left blank, multisim.py looks for
+    prave_id_map.json next to itself, and falls back to a built-in
+    default (00->1000, 0B->1001, 0C->1002, 0D->1003, 03->1006) if
+    neither is found.
+
+--prave-strict-map
+    Only affects PRAVE115200. Any DSM ID not found in the PRAVE ID
+    map is skipped entirely instead of falling back to its raw hex
+    value.
 
 --require-0F
     Ignore any log line whose status byte is not "0F" (i.e. only
@@ -374,6 +388,18 @@ class MultiSimGUI(tk.Tk):
         c6.grid(row=1, column=3, sticky="w", pady=(6, 0))
         ToolTip(c6, "Only process log lines whose status byte is \"0F\"\n(i.e. flagged as a valid/good fix).")
 
+        ttk.Label(opts, text="PRAVE ID map (json, optional):").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.prave_id_map_var = tk.StringVar(value="")
+        prave_map_entry = ttk.Entry(opts, textvariable=self.prave_id_map_var)
+        prave_map_entry.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(6, 0))
+        ToolTip(prave_map_entry, "Only used by PRAVE115200. Optional JSON file mapping\nDSM hex IDs to PRAVE numeric 'From ID' values. Leave\nblank to use prave_id_map.json next to multisim.py, or\nthe built-in default mapping.")
+        ttk.Button(opts, text="Browse...", command=self._pick_prave_id_map).grid(row=2, column=3, sticky="w", pady=(6, 0))
+
+        self.prave_strict_map_var = tk.BooleanVar(value=False)
+        c7 = ttk.Checkbutton(opts, text="--prave-strict-map (skip unmapped IDs)", variable=self.prave_strict_map_var)
+        c7.grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ToolTip(c7, "Only affects PRAVE115200. Any DSM ID not found in the\nPRAVE ID map is skipped entirely instead of falling\nback to its raw hex value.")
+
         # --- Extra outputs / filters ---
         extras = ttk.LabelFrame(top, text="Outputs / Filters", padding=10)
         extras.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(12, 0))
@@ -439,6 +465,14 @@ class MultiSimGUI(tk.Tk):
         )
         if path:
             self.file_var.set(path)
+
+    def _pick_prave_id_map(self):
+        path = filedialog.askopenfilename(
+            title="Select PRAVE ID map (json)",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if path:
+            self.prave_id_map_var.set(path)
 
     def _refresh_ports(self):
         ports = list_com_ports()
@@ -544,6 +578,13 @@ class MultiSimGUI(tk.Tk):
 
         if self.require_0f_var.get():
             args.append("--require-0F")
+
+        prave_map = self.prave_id_map_var.get().strip()
+        if prave_map:
+            args += ["--prave-id-map", prave_map]
+
+        if self.prave_strict_map_var.get():
+            args.append("--prave-strict-map")
 
         if dsm_id:
             args += ["--id", dsm_id]

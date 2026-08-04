@@ -76,6 +76,7 @@ python multisim.py sim.txt --port COM9 --protocol AMP19200
 | LIVETOOLS4800 | 4800   | Full NMEA burst (GGA, GSA, GSV, RMC) |
 | PKLDS9600     | 9600   | Legacy PKLDS protocol                |
 | NMEA4800      | 4800   | GPRMC, wait 200ms, then GPGGA        |
+| PRAVE115200   | 115200 | Raveon $PRAVE sentence (AN177)       |
 
 ---
 
@@ -139,6 +140,7 @@ GPGGA4800
 LIVETOOLS4800
 PKLDS9600
 NMEA4800
+PRAVE115200
 ```
 
 Example:
@@ -312,6 +314,51 @@ Remap DSM00 to ID `0x64` (100 decimal) for AMP / Kenwood tracking systems.
 
 ---
 
+### `--prave-id-map <path.json>`
+
+Only used with `--protocol PRAVE115200`. Optional JSON file mapping DSM hex IDs to the numeric "From ID" sent in the `$PRAVE` sentence.
+
+Format:
+
+```json
+{
+  "00": 1000,
+  "0B": 1001
+}
+```
+
+If omitted, `prave_id_map.json` next to `multisim.py` is used if present; otherwise a built-in default is used:
+
+| DSM ID | PRAVE From ID |
+| ------ | -------------- |
+| DSM00  | 1000            |
+| DSM0B  | 1001            |
+| DSM0C  | 1002            |
+| DSM0D  | 1003            |
+| DSM03  | 1006            |
+
+Any DSM ID not listed in the map falls back to its raw hex value (e.g. DSM0A → 10) so the protocol still works for unmapped vehicles. Edit the JSON file (or point `--prave-id-map` at a different one) to change the mapping without touching code.
+
+Example:
+
+```bash
+--protocol PRAVE115200 --prave-id-map my_prave_ids.json
+```
+
+---
+
+### `--prave-strict-map`
+
+Only affects `PRAVE115200`. Any DSM ID **not** present in the PRAVE ID map is skipped entirely (no `$PRAVE` sentence sent for it), instead of falling back to its raw hex value.
+
+Example:
+
+```bash
+--protocol PRAVE115200 --prave-strict-map
+```
+
+---
+
 ## Playback Control
 
 ### `--loop`
@@ -398,6 +445,24 @@ Example:
 ```
 DSM0A → 1010
 ```
+
+---
+
+# 📡 PRAVE Output
+
+PRAVE mode generates Raveon `$PRAVE` sentences (see `AN177 (PRAVE).pdf`):
+
+```
+$PRAVE,FromID,ToID,lat,lon,hhmmss,gpsStatus,numSats,alt,temp,voltage,ioStatus,rssi,speed,heading,status,spare*CS
+```
+
+Baud: **115200** (default; override with `--override-baudrate` if your radio uses a different rate, e.g. the AN177 native rate of 38400)
+
+* `FromID` comes from the DSM hex ID via the [PRAVE ID map](#--prave-id-map-pathjson)
+* `ToID` is always `0000` (simulator doesn't model a destination)
+* Latitude/longitude use signed `ddmm.mmmm` / `dddmm.mmmm` (no separate N/S/E/W field)
+* Speed is converted from the log's knots to km/h as required by the spec
+* Satellite count, temperature, voltage, IO status and RSSI are simulated with fixed placeholder values since the DSM log doesn't carry them
 
 ---
 

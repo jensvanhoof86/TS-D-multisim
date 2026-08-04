@@ -7,6 +7,7 @@ import serial.tools.list_ports
 import threading
 import json
 import socket
+import os
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -342,6 +343,81 @@ def build_gsv():
 
 
 # -------------------------------------------------
+# PRAVE helpers (Raveon AN177 $PRAVE sentence)
+# -------------------------------------------------
+
+# Used whenever --prave-id-map isn't given and no prave_id_map.json
+# sits next to this script. Maps DSM hex ID -> PRAVE numeric "From ID".
+DEFAULT_PRAVE_ID_MAP = {
+    "00": 1000,
+    "0B": 1001,
+    "0C": 1002,
+    "0D": 1003,
+    "03": 1006,
+}
+
+
+def deg_to_prave_lat(lat):
+    sign = "-" if lat < 0 else ""
+    lat = abs(lat)
+    d = int(lat)
+    m = (lat - d) * 60
+    return f"{sign}{d:02d}{m:07.4f}"
+
+
+def deg_to_prave_lon(lon):
+    sign = "-" if lon < 0 else ""
+    lon = abs(lon)
+    d = int(lon)
+    m = (lon - d) * 60
+    return f"{sign}{d:03d}{m:07.4f}"
+
+
+def map_prave_id(dsm_id, id_map):
+    if dsm_id in id_map:
+        return id_map[dsm_id]
+    return int(dsm_id, 16)
+
+
+def load_prave_id_map(path):
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return {str(k).replace("DSM", "").upper(): int(v) for k, v in raw.items()}
+
+
+def build_prave(from_id, hhmmss, lat, lon, alt, speed_kmh, course, to_id=0,
+                 num_sats=8, gps_status=1, temp_c=0.0, voltage=0.0,
+                 io_status=0, rssi=0, status="", odometer=None):
+    lat_s = deg_to_prave_lat(lat)
+    lon_s = deg_to_prave_lon(lon)
+
+    fields = [
+        "PRAVE",
+        f"{from_id:04d}",
+        f"{to_id:04d}",
+        lat_s,
+        lon_s,
+        hhmmss,
+        str(gps_status),
+        str(num_sats),
+        f"{alt:.0f}",
+        f"{temp_c:.1f}",
+        f"{voltage:.1f}",
+        str(io_status),
+        str(rssi),
+        f"{speed_kmh:.0f}",
+        f"{course:.0f}",
+        status,
+        "",  # spare
+    ]
+    if odometer is not None:
+        fields.append(f"{odometer:.1f}")
+
+    body = ",".join(fields)
+    return f"${body}*{nmea_checksum(body)}\r\n"
+
+
+# -------------------------------------------------
 # DSM helpers
 # -------------------------------------------------
 
@@ -418,7 +494,7 @@ def encode_amp(dsm_id, lat_deg, lon_deg, alt_m, enable_remap=False):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", help="Serial port (e.g. COM4 or /dev/ttyUSB0)")
-parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600 | NMEA4800")
+parser.add_argument("--protocol", help="Protocol: AMP19200 | KENWOOD4800 | DSM115200 | GPGGA4800 | LIVETOOLS4800 | PKLDS9600 | NMEA4800 | PRAVE115200")
 parser.add_argument("--loop", action="store_true", help="Loop the input file continuously")
 
 parser.add_argument("--enable-server", action="store_true", help="Enable HTTP GPS API server")
@@ -442,6 +518,9 @@ parser.add_argument("--require-0F", action="store_true")
 parser.add_argument("--ignore", action="append", default=[])
 parser.add_argument("--id", help="DSM ID to filter (used with GPGGA/LIVETOOLS and livetools-server)")
 parser.add_argument("--DSM-out", dest="dsm_out", help="Optional mirror output of raw DSM at 115200 baud (e.g. COM12)")
+
+parser.add_argument("--prave-id-map", dest="prave_id_map", help="Optional JSON file mapping DSM hex IDs to PRAVE numeric 'From ID' values (PRAVE115200 only). Defaults to prave_id_map.json next to this script, or a built-in default if that file is absent.")
+parser.add_argument("--prave-strict-map", dest="prave_strict_map", action="store_true", help="PRAVE115200 only: skip any DSM ID not present in the PRAVE ID map, instead of falling back to its raw hex value")
 
 args = parser.parse_args()
 
@@ -476,6 +555,7 @@ if protocol is None:
     print("5) LiveTools 4800")
     print("6) Kenwood PKLDS 9600")
     print("7) NMEA 4800 (GPRMC + 200ms + GPGGA)")
+    print("8) PRAVE 115200 (Raveon $PRAVE)")
 
     choice = input("Choice: ").strip()
 
@@ -487,6 +567,7 @@ if protocol is None:
         "5": "LIVETOOLS4800",
         "6": "PKLDS9600",
         "7": "NMEA4800",
+        "8": "PRAVE115200",
     }
 
     protocol = protocol_map.get(choice)
@@ -526,6 +607,10 @@ elif protocol == "PKLDS9600":
     mode_name = "PKLDS"
     baud = 9600
 
+elif protocol == "PRAVE115200":
+    mode_name = "PRAVE"
+    baud = 115200
+
 elif protocol == "NMEA4800":
     mode_name = "NMEA4800"
     baud = 4800
@@ -536,6 +621,28 @@ elif protocol == "NMEA4800":
 else:
     print(f"Unknown protocol: {protocol}")
     sys.exit(1)
+
+# -------------------------------------------------
+# PRAVE ID map (DSM hex ID -> PRAVE numeric "From ID")
+# -------------------------------------------------
+
+prave_id_map = dict(DEFAULT_PRAVE_ID_MAP)
+if mode_name == "PRAVE":
+    default_map_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prave_id_map.json")
+    map_path = args.prave_id_map or default_map_path
+
+    if os.path.exists(map_path):
+        try:
+            prave_id_map = load_prave_id_map(map_path)
+            print(f"Loaded PRAVE ID map from {map_path}\n")
+        except Exception as e:
+            print(f"Failed to load PRAVE ID map from {map_path}: {e}")
+            sys.exit(1)
+    elif args.prave_id_map:
+        print(f"PRAVE ID map file not found: {map_path}")
+        sys.exit(1)
+    else:
+        print("No prave_id_map.json found next to script; using built-in default PRAVE ID map\n")
 
 # If livetools UDP is enabled but we are not in a mode that already prompts for --id,
 # prompt here so UDP 10013 knows which DSM ID to track.
@@ -701,6 +808,10 @@ while True:
             if mode_name in ("GPGGA", "LIVETOOLS", "NMEA4800") and dsm_id != args.id:
                 continue
 
+            if mode_name == "PRAVE" and args.prave_strict_map and dsm_id not in prave_id_map:
+                print(f"SKIP (PRAVE unmapped): DSM{dsm_id}")
+                continue
+
             # Timing based on log timestamps
             if last_ts is not None:
                 time.sleep((ts - last_ts) / 1000.0)
@@ -781,6 +892,12 @@ while True:
                 pkt = build_pklds_sentence(vehicle_id, lat, lon)
                 send_main(pkt)
                 print("TX: PKLDS", pkt, tag)
+
+            elif mode_name == "PRAVE":
+                from_id = map_prave_id(dsm_id, prave_id_map)
+                prave = build_prave(from_id, hhmmss, lat, lon, alt, spd * 1.852, crs)
+                send_main(prave.encode())
+                print("TX:", prave.strip(), tag)
 
     if not args.loop:
         break
