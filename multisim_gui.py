@@ -543,7 +543,10 @@ class MultiSimGUI(tk.Tk):
             )
 
         python_exe = get_python_executable()
-        args = [python_exe, multisim_path, in_file, "--port", main_port, "--protocol", proto]
+        # -u: unbuffered stdout, so TX lines stream into the log live instead
+        # of sitting in Python's block-buffer until the process exits (stdout
+        # isn't a real terminal once it's piped into this GUI).
+        args = [python_exe, "-u", multisim_path, in_file, "--port", main_port, "--protocol", proto]
 
         ob = self.override_baud_var.get().strip()
         if ob:
