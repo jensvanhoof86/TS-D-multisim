@@ -1,4 +1,4 @@
-py multisim.py sim.txt  --enable-server  --port COM1 --protocol DSM115200 --loop
+py multisim.py sim.txt  --enable-server  --port COM4 --protocol DSM115200 --loop
 
 
 REM ------------------------------------------------------------
