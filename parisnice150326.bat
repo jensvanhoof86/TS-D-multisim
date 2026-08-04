@@ -2,7 +2,7 @@ REM multisim.py sim.txt  --enable-server --starttime 152900 --port COM21 --proto
 
 
 
-py multisim.py dsm_20260315.txt --port COM2 --protocol DSM115200 --loop --starttime 131427
+py multisim.py dsm_20260315.txt --port COM4 --protocol DSM115200 --loop --starttime 131427
 pause
 
 REM ------------------------------------------------------------

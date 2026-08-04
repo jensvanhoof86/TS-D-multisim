@@ -14,6 +14,7 @@
 import os
 import sys
 import queue
+import shutil
 import threading
 import subprocess
 import tkinter as tk
@@ -41,6 +42,31 @@ PROTOCOL_INFO = {
 
 PROTOCOLS = list(PROTOCOL_INFO.keys())
 ID_REQUIRED_PROTOCOLS = {p for p, (_, _, needs_id) in PROTOCOL_INFO.items() if needs_id}
+
+
+def get_base_dir():
+    # When frozen by PyInstaller (--onefile), __file__ points into the
+    # bootloader's randomized temp extraction folder (%TEMP%\_MEIxxxxxx),
+    # which is different on every run. Use the real exe's location instead.
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_python_executable():
+    # When frozen, sys.executable is multisim_gui.exe itself, not a Python
+    # interpreter, so it can't be used to run multisim.py. Fall back to a
+    # system Python (same as the .bat files, which use the "py" launcher).
+    if getattr(sys, "frozen", False):
+        for candidate in ("py", "python"):
+            found = shutil.which(candidate)
+            if found:
+                return found
+        raise FileNotFoundError(
+            "Could not find a Python interpreter (py/python) on PATH. "
+            "multisim.py requires a system Python install to run."
+        )
+    return sys.executable
 
 
 def list_com_ports():
@@ -478,8 +504,8 @@ class MultiSimGUI(tk.Tk):
 
     # ---------------- Process control ----------------
     def _build_args(self):
-        # multisim.py path (same folder)
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # multisim.py path (same folder as the GUI exe/script)
+        base_dir = get_base_dir()
         multisim_path = os.path.join(base_dir, "multisim.py")
         if not os.path.exists(multisim_path):
             raise FileNotFoundError(f"multisim.py not found next to GUI: {multisim_path}")
@@ -516,7 +542,8 @@ class MultiSimGUI(tk.Tk):
                 "or when --enable-livetools-server is on."
             )
 
-        args = [sys.executable, multisim_path, in_file, "--port", main_port, "--protocol", proto]
+        python_exe = get_python_executable()
+        args = [python_exe, multisim_path, in_file, "--port", main_port, "--protocol", proto]
 
         ob = self.override_baud_var.get().strip()
         if ob:
@@ -599,7 +626,7 @@ class MultiSimGUI(tk.Tk):
                 stderr=subprocess.STDOUT,
                 bufsize=1,
                 universal_newlines=True,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
+                cwd=get_base_dir(),
             )
         except Exception as e:
             self.proc = None
