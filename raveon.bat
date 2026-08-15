@@ -1,7 +1,7 @@
 
 
 
-py multisim.py sim.txt --port COM1 --protocol PRAVE115200    --loop   --prave-strict-map
+py multisim.py sim.txt --port COM9 --protocol PRAVE115200    --loop   --prave-strict-map --highlight DSM01
 REM --prave-strict-map ignores any ID that's not in the configuration json file
 pause
 

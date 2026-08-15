@@ -29,6 +29,8 @@ Originally developed for the **TS-D tracking platform**, but designed to be a st
 
 * DSM filtering and validation options
 
+* Console highlighting of specific DSM IDs, each in its own colour
+
 * Optional HTTP GPS API server for TS-D Live
 
 * LiveTools TCP broadcast server
@@ -302,6 +304,24 @@ Example:
 
 ```bash
 --id DSM00
+```
+
+---
+
+### `--highlight <DSMxx>`
+
+Highlight one or more DSM IDs in the console output so they stand out from the rest of the log. Each highlighted ID gets its own distinct colour (cycled if you list more than 6). Doesn't filter or drop any lines — purely a display aid.
+
+Can be repeated and/or comma-separated.
+
+Example:
+
+```bash
+--highlight DSM01 --highlight DSM03
+```
+
+```bash
+--highlight DSM01,DSM03
 ```
 
 ---
