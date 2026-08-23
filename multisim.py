@@ -413,6 +413,32 @@ def progress_tag(dsm_id, hhmmss):
     return f"\033[36m{tag}\033[0m"  # cyan
 
 
+# -------------------------------------------------
+# Highlighted DSM ID console colouring
+# -------------------------------------------------
+
+RESET = "\033[0m"
+
+# One distinct colour per highlighted DSM ID, cycled if more IDs than colours.
+HIGHLIGHT_PALETTE = [
+    "\033[93m",  # bright yellow
+    "\033[95m",  # bright magenta
+    "\033[92m",  # bright green
+    "\033[91m",  # bright red
+    "\033[94m",  # bright blue
+    "\033[97m",  # bright white
+]
+
+
+def hprint(dsm_id, *parts):
+    text = " ".join(str(p) for p in parts)
+    color = highlight_color_map.get(dsm_id)
+    if color:
+        print(f"{color}{text}{RESET}")
+    else:
+        print(text)
+
+
 def parse_dsm_line(line):
     ts_part, payload = line.strip().split("]", 1)
     timestamp_ms = int(ts_part[1:])
@@ -481,6 +507,7 @@ parser.add_argument("--starttime", help="Start replay at or after this HHMMSS (e
 parser.add_argument("--require-0F", action="store_true")
 parser.add_argument("--ignore", action="append", default=[])
 parser.add_argument("--id", help="DSM ID to filter (used with GPGGA/LIVETOOLS and livetools-server)")
+parser.add_argument("--highlight", action="append", default=[], help="DSM ID(s) to highlight in the console with a distinct colour so they stand out (e.g. --highlight DSM01, --highlight DSM01,DSM03, or repeat the flag). Each highlighted ID gets its own colour.")
 parser.add_argument("--DSM-out", dest="dsm_out", help="Optional mirror output of raw DSM at 115200 baud (e.g. COM12)")
 
 parser.add_argument("--prave-id-map", dest="prave_id_map", help="Optional JSON file mapping DSM hex IDs to PRAVE numeric 'From ID' values (PRAVE115200 only). Defaults to prave_id_map.json next to this script, or a built-in default if that file is absent.")
@@ -489,6 +516,24 @@ parser.add_argument("--prave-strict-map", dest="prave_strict_map", action="store
 args = parser.parse_args()
 
 args.ignore = [i.replace("DSM", "").upper() for i in args.ignore]
+
+highlight_ids = []
+for item in args.highlight:
+    for part in item.split(","):
+        part = part.strip().replace("DSM", "").upper()
+        if part and part not in highlight_ids:
+            highlight_ids.append(part)
+
+highlight_color_map = {
+    hid: HIGHLIGHT_PALETTE[i % len(HIGHLIGHT_PALETTE)]
+    for i, hid in enumerate(highlight_ids)
+}
+
+if highlight_color_map:
+    print("Highlighting DSM IDs:")
+    for hid, color in highlight_color_map.items():
+        print(f"  {color}DSM{hid}{RESET}")
+    print()
 
 start_hhmmss = None
 if args.starttime:
@@ -760,11 +805,11 @@ while True:
                 time.sleep(0.2)
                 nmea_ser.write(gga.encode())
 
-                print("NMEA TX:", rmc.strip())
-                print("NMEA TX:", gga.strip())
+                hprint(dsm_id, "NMEA TX:", rmc.strip())
+                hprint(dsm_id, "NMEA TX:", gga.strip())
 
             if not is_valid_hex_byte(dsm_id):
-                print(f"SKIP (invalid DSM ID): DSM{dsm_id}")
+                hprint(dsm_id, f"SKIP (invalid DSM ID): DSM{dsm_id}")
                 continue
 
             if args.require_0F and status != "0F":
@@ -778,7 +823,7 @@ while True:
                 continue
 
             if mode_name == "PRAVE" and args.prave_strict_map and dsm_id not in prave_id_map:
-                print(f"SKIP (PRAVE unmapped): DSM{dsm_id}")
+                hprint(dsm_id, f"SKIP (PRAVE unmapped): DSM{dsm_id}")
                 continue
 
             # Timing based on log timestamps
@@ -813,17 +858,17 @@ while True:
                     enable_remap=args.enable_remapDSM00
                 )
                 send_main(data)
-                print("TX:", hex_dump(data), tag)
+                hprint(dsm_id, "TX:", hex_dump(data), tag)
 
             elif mode_name == "DSM":
                 out = line.split("]", 1)[1].strip()
                 send_main(out.encode() + b"\r\n")
-                print("TX:", out, tag)
+                hprint(dsm_id, "TX:", out, tag)
 
             elif mode_name == "GPGGA":
                 gga = build_gga(hhmmss, lat, lon, alt)
                 send_main(gga.encode())
-                print("TX:", gga.strip(), tag)
+                hprint(dsm_id, "TX:", gga.strip(), tag)
 
             elif mode_name == "LIVETOOLS":
                 gga = build_gga(hhmmss, lat, lon, alt)
@@ -843,7 +888,7 @@ while True:
 
                 send_main(rmc.encode())
 
-                print("TX: LIVETOOLS burst", tag)
+                hprint(dsm_id, "TX: LIVETOOLS burst", tag)
 
             elif mode_name == "NMEA4800":
                 rmc = build_rmc(hhmmss, lat, lon, spd, crs)
@@ -853,20 +898,20 @@ while True:
                 time.sleep(0.2)
                 send_main(gga.encode())
 
-                print("TX:", rmc.strip(), tag)
-                print("TX:", gga.strip(), tag)
+                hprint(dsm_id, "TX:", rmc.strip(), tag)
+                hprint(dsm_id, "TX:", gga.strip(), tag)
 
             elif mode_name == "PKLDS":
                 vehicle_id = 1000 + int(dsm_id, 16)
                 pkt = build_pklds_sentence(vehicle_id, lat, lon)
                 send_main(pkt)
-                print("TX: PKLDS", pkt, tag)
+                hprint(dsm_id, "TX: PKLDS", pkt, tag)
 
             elif mode_name == "PRAVE":
                 from_id = map_prave_id(dsm_id, prave_id_map)
                 prave = build_prave(from_id, hhmmss, lat, lon, alt, spd * 1.852, crs)
                 send_main(prave.encode())
-                print("TX:", prave.strip(), tag)
+                hprint(dsm_id, "TX:", prave.strip(), tag)
 
     if not args.loop:
         break
